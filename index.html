@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MINDMAP</title>
+  <!-- Using a rounded futuristic font -->
+  <link href="https://fonts.googleapis.com/css2?family=Audiowide&display=swap" rel="stylesheet">
+  <style>
+    /* The container that scales with the viewport and orientation */
+    #gameContainer {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background: #000;
+    }
+    /* Set basic body styling */
+    body {
+      margin: 0;
+      overflow: hidden;
+      font-family: 'Arial Rounded MT Bold', sans-serif;
+    }
+    /* Title pinned to the top of the container */
+    #gameTitle {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-family: 'Audiowide', cursive;
+      font-size: 48px;
+      color: #fff;
+      z-index: 4;
+      text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.7);
+    }
+    /* Canvas fills container */
+    canvas {
+      display: block;
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+    /* Three.js renderer canvas */
+    canvas.rendererCanvas {
+      z-index: 1;
+    }
+    /* Game canvas for target pattern and touch events */
+    #gameCanvas {
+      z-index: 2;
+      background: transparent;
+    }
+    /* HUD container (using the original frosted, 3D style) */
+    #hud {
+      position: absolute;
+      bottom: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: #fff;
+      background: rgba(255, 255, 255, 0.2);
+      padding: 10px;
+      border-radius: 15px;
+      backdrop-filter: blur(10px);
+      border: 2px solid rgba(255, 255, 255, 0.4);
+      box-shadow: inset 0 1px 3px rgba(255,255,255,0.5), 0 4px 15px rgba(0, 0, 0, 0.3);
+      user-select: none;
+      pointer-events: auto;
+      z-index: 3;
+      display: flex;
+      align-items: center;
+      gap: 15px;
+      white-space: nowrap;
+    }
+    /* HUD text and buttons use the futuristic font */
+    #hud span,
+    #hud button {
+      pointer-events: auto;
+      font-family: 'Audiowide', cursive;
+    }
+    #hud span {
+      font-size: 16px;
+    }
+    /* Original 3D button styling */
+    #hud button {
+      padding: 5px 10px;
+      font-size: 14px;
+      cursor: pointer;
+      background: rgba(255, 255, 255, 0.2);
+      color: #fff;
+      border: 2px solid rgba(255, 255, 255, 0.4);
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+    }
+    #hud button:hover {
+      background: rgba(255, 255, 255, 0.3);
+      box-shadow: 0 3px 6px rgba(0, 0, 0, 0.6);
+    }
+    /* Inside each button, add an icon (using a Unicode symbol) and a label */
+    #hud button .icon {
+      margin-right: 5px;
+    }
+  </style>
+</head>
+<body>
+  <div id="gameContainer">
+    <div id="gameTitle">MINDMAP</div>
+    <!-- The Three.js renderer canvas will be inserted before the gameCanvas -->
+    <canvas id="gameCanvas"></canvas>
+    <div id="hud">
+      <span id="levelDisplay">Level: 1</span>
+      <span id="scoreDisplay">Score: 0</span>
+      <button id="restartLevelButton" title="Restart Level">
+        <span class="icon">↻</span><span class="label">Level</span>
+      </button>
+      <button id="restartGameButton" title="Restart Game">
+        <span class="icon">⟲</span><span class="label">Game</span>
+      </button>
+    </div>
+  </div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script>
+    // Use a reasonable MAX_POINTS so as not to exceed WebGL uniform limits.
+    const MAX_POINTS = 256;
+    
+    /********** Three.js Background Setup with Liquid Smoke Effect **********/
+    const scene = new THREE.Scene();
+    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    // Enable alpha and set an opaque clear so the shader output is not masked.
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setClearColor(0x000000, 1);
+    renderer.domElement.classList.add('rendererCanvas');
+    // Insert the renderer canvas as the first child of the container
+    const container = document.getElementById('gameContainer');
+    container.insertBefore(renderer.domElement, document.getElementById('gameCanvas'));
+    
+    const material = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uTouches: { value: new Array(MAX_POINTS).fill().map(() => new THREE.Vector2(0, 0)) },
+        uStrengths: { value: new Array(MAX_POINTS).fill(0) },
+        uNumTouches: { value: 0 }
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime;
+        const int MAX_TOUCHES = ${MAX_POINTS};
+        uniform vec2 uTouches[MAX_TOUCHES];
+        uniform float uStrengths[MAX_TOUCHES];
+        uniform int uNumTouches;
+        varying vec2 vUv;
+        
+        float random(vec2 p) {
+          return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+        }
+        float noise(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          float a = random(i);
+          float b = random(i + vec2(1.0, 0.0));
+          float c = random(i + vec2(0.0, 1.0));
+          float d = random(i + vec2(1.0, 1.0));
+          vec2 u = f * f * (3.0 - 2.0 * f);
+          return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
+        }
+        
+        void main() {
+          vec2 uv = vUv;
+          
+          // Base liquid displacement effect
+          vec2 noiseDisp = vec2(
+            noise(uv * 5.0 + uTime * 0.2),
+            noise(uv * 5.0 + uTime * 0.2 + 100.0)
+          ) * 0.05;
+          
+          // Swirling liquid effect along the drawn path
+          vec2 touchDisp = vec2(0.0);
+          for (int i = 0; i < uNumTouches; i++) {
+            vec2 d = uv - uTouches[i];
+            float r = length(d);
+            if (r > 0.0) {
+              float variance = 0.03 * uStrengths[i] * uStrengths[i];
+              float influence = exp(-r * r / variance) * uStrengths[i];
+              vec2 tangent = vec2(-d.y, d.x) / r;
+              touchDisp += tangent * influence * 0.2;
+            }
+          }
+          
+          vec2 totalDisp = noiseDisp + touchDisp * 0.15;
+          vec2 distortedUV = uv + totalDisp;
+          
+          float n1 = noise(distortedUV * 3.0 + uTime * 0.2);
+          float n2 = noise(distortedUV * 3.0 + uTime * 0.2 + vec2(10.0, 20.0));
+          float n3 = noise(distortedUV * 3.0 + uTime * 0.2 + vec2(20.0, 10.0));
+          
+          vec3 color = vec3(
+            0.5 + 0.5 * sin(n1 * 6.28 + uTime),
+            0.5 + 0.5 * sin(n2 * 6.28 + uTime + 2.0),
+            0.5 + 0.5 * sin(n3 * 6.28 + uTime + 4.0)
+          );
+          
+          float brightness = 0.7 + 0.3 * noise(uv * 5.0 + uTime * 0.2);
+          color *= brightness;
+          
+          gl_FragColor = vec4(color, 1.0);
+        }
+      `
+    });
+    const plane = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material);
+    scene.add(plane);
+    
+    /********** Rubber Band (Continuous Drawing) Variables & Animation **********/
+    let isDrawing = false;
+    let rubberBandFullPath = [];    // Full drawn path (in UV coordinates)
+    let rubberBandDisplayPath = []; // Possibly contracted version for display
+
+    let contracting = false;
+    let fading = false;
+    let contractionStartTime = 0;
+    let contractionDuration = 1.0; // seconds
+    let fadeStartTime = 0;
+    let fadeDuration = 1.0; // seconds
+    let fadeAlpha = 1.0;
+
+    const clock = new THREE.Clock(true);
+
+    // Resample a polyline to 'numSamples' evenly distributed points.
+    function resamplePolyline(points, numSamples) {
+      if (points.length === 0) return [];
+      let totalLength = 0;
+      let lengths = [0];
+      for (let i = 0; i < points.length - 1; i++) {
+        let d = points[i].distanceTo(points[i + 1]);
+        totalLength += d;
+        lengths.push(totalLength);
+      }
+      let newPoints = [];
+      let step = totalLength / (numSamples - 1);
+      for (let i = 0; i < numSamples; i++) {
+        let target = i * step;
+        let j = 0;
+        while (j < lengths.length - 1 && lengths[j + 1] < target) {
+          j++;
+        }
+        let segLength = lengths[j + 1] - lengths[j];
+        let t = (segLength === 0 ? 0 : (target - lengths[j]) / segLength);
+        let pt = new THREE.Vector2().lerpVectors(points[j], points[j + 1], t);
+        newPoints.push(pt);
+      }
+      return newPoints;
+    }
+
+    // Returns a contracted polyline based on the contraction factor.
+    // If the result exceeds maxPoints, it is resampled.
+    function getContractedPolyline(points, factor, maxPoints) {
+      if (points.length === 0) return [];
+      let totalLength = 0;
+      let segmentLengths = [];
+      for (let i = 0; i < points.length - 1; i++) {
+        let d = points[i].distanceTo(points[i + 1]);
+        segmentLengths.push(d);
+        totalLength += d;
+      }
+      let startDist = factor * totalLength;
+      let acc = 0;
+      let newStart = points[0].clone();
+      let startIndex = 0;
+      for (let i = 0; i < segmentLengths.length; i++) {
+        if (acc + segmentLengths[i] >= startDist) {
+          let remaining = startDist - acc;
+          let t = (segmentLengths[i] === 0 ? 0 : remaining / segmentLengths[i]);
+          newStart = new THREE.Vector2().lerpVectors(points[i], points[i + 1], t);
+          startIndex = i + 1;
+          break;
+        }
+        acc += segmentLengths[i];
+      }
+      let contracted = [newStart];
+      for (let i = startIndex; i < points.length; i++) {
+        contracted.push(points[i].clone());
+      }
+      if (contracted.length > maxPoints) {
+        contracted = resamplePolyline(contracted, maxPoints);
+      }
+      return contracted;
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const deltaTime = clock.getDelta();
+      material.uniforms.uTime.value += 0.01;
+      
+      if (rubberBandDisplayPath.length > 0) {
+        if (contracting) {
+          let elapsed = clock.elapsedTime - contractionStartTime;
+          let factor = Math.min(elapsed / contractionDuration, 1.0);
+          // Use the rubber band effect with contraction and resampling.
+          rubberBandDisplayPath = getContractedPolyline(rubberBandFullPath, factor, MAX_POINTS);
+          if (factor >= 1.0) {
+            contracting = false;
+            fading = true;
+            fadeStartTime = clock.elapsedTime;
+          }
+        } else if (fading) {
+          let elapsedFade = clock.elapsedTime - fadeStartTime;
+          fadeAlpha = Math.max(1 - (elapsedFade / fadeDuration), 0);
+          if (fadeAlpha <= 0) {
+            rubberBandFullPath = [];
+            rubberBandDisplayPath = [];
+            fading = false;
+          }
+        }
+        // Always send the most recent MAX_POINTS to the shader.
+        const pointsToSend = rubberBandDisplayPath.slice(-MAX_POINTS);
+        material.uniforms.uNumTouches.value = pointsToSend.length;
+        for (let i = 0; i < pointsToSend.length; i++) {
+          material.uniforms.uTouches.value[i].copy(pointsToSend[i]);
+          material.uniforms.uStrengths.value[i] = (fading ? fadeAlpha : 1.0);
+        }
+      } else {
+        material.uniforms.uNumTouches.value = 0;
+      }
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    /********** Game Canvas Setup & HUD **********/
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    const levelDisplay = document.getElementById('levelDisplay');
+    const scoreDisplay = document.getElementById('scoreDisplay');
+    const restartLevelButton = document.getElementById('restartLevelButton');
+    const restartGameButton = document.getElementById('restartGameButton');
+
+    let currentLevel = 0;
+    let score = 0;
+    let drawing = [];
+    let patternVisible = true;
+    let patternTimer = null;
+    let levels = generateLevels();
+
+    canvas.addEventListener('touchstart', startDrawing, { passive: false });
+    canvas.addEventListener('touchmove', recordDrawing, { passive: false });
+    canvas.addEventListener('touchend', endDrawing, { passive: false });
+
+    function startDrawing(event) {
+      event.preventDefault();
+      if (patternVisible) return;
+      isDrawing = true;
+      rubberBandFullPath = [];
+      rubberBandDisplayPath = [];
+      let touch = event.touches[0];
+      let rect = canvas.getBoundingClientRect();
+      let uvX = (touch.clientX - rect.left) / rect.width;
+      let uvY = 1 - (touch.clientY - rect.top) / rect.height;
+      let startPos = new THREE.Vector2(uvX, uvY);
+      rubberBandFullPath.push(startPos.clone());
+      rubberBandDisplayPath.push(startPos.clone());
+      drawing = [{ x: touch.clientX, y: touch.clientY, time: Date.now() }];
+    }
+
+    function recordDrawing(event) {
+      event.preventDefault();
+      if (!isDrawing) return;
+      let touch = event.touches[0];
+      let rect = canvas.getBoundingClientRect();
+      let uvX = (touch.clientX - rect.left) / rect.width;
+      let uvY = 1 - (touch.clientY - rect.top) / rect.height;
+      let currentPos = new THREE.Vector2(uvX, uvY);
+      let lastPoint = rubberBandFullPath[rubberBandFullPath.length - 1];
+      // Use a threshold to avoid overcrowding the path.
+      if (currentPos.distanceTo(lastPoint) > 0.005) {
+        rubberBandFullPath.push(currentPos.clone());
+        rubberBandDisplayPath.push(currentPos.clone());
+      }
+      drawing.push({ x: touch.clientX, y: touch.clientY, time: Date.now() });
+    }
+
+    function endDrawing(event) {
+      event.preventDefault();
+      isDrawing = false;
+      if (rubberBandFullPath.length === 0) return;
+      contracting = true;
+      contractionStartTime = clock.elapsedTime;
+      checkCompletion();
+    }
+
+    function generateLevels() {
+      const levelsArray = [];
+      const centerX = canvas.width / 2;
+      const centerY = canvas.height / 2;
+      const baseSize = Math.min(canvas.width, canvas.height) * 0.3;
+      
+      for (let i = 0; i < 100; i++) {
+        let points = [];
+        if (i < 10) {
+          const sides = i + 3;
+          for (let j = 0; j < sides; j++) {
+            const angle = (j / sides) * 2 * Math.PI;
+            points.push({
+              x: centerX + baseSize * Math.cos(angle),
+              y: centerY + baseSize * Math.sin(angle)
+            });
+          }
+          points.push(points[0]);
+        } else if (i < 20) {
+          const pointsCount = 5 + (i - 10);
+          const outerRadius = baseSize;
+          const innerRadius = baseSize * 0.5;
+          for (let j = 0; j < pointsCount; j++) {
+            const angleOuter = (j / pointsCount) * 2 * Math.PI;
+            const angleInner = ((j + 0.5) / pointsCount) * 2 * Math.PI;
+            points.push({
+              x: centerX + outerRadius * Math.cos(angleOuter),
+              y: centerY + outerRadius * Math.sin(angleOuter)
+            });
+            points.push({
+              x: centerX + innerRadius * Math.cos(angleInner),
+              y: centerY + innerRadius * Math.sin(angleInner)
+            });
+          }
+          points.push(points[0]);
+        } else if (i < 50) {
+          const layers = Math.floor((i - 20) / 10) + 2;
+          const sides = 4 + ((i - 20) % 10);
+          for (let layer = 0; layer < layers; layer++) {
+            const size = baseSize * (1 - layer * 0.2);
+            for (let j = 0; j < sides; j++) {
+              const angle = (j / sides) * 2 * Math.PI + (layer * Math.PI / 4);
+              points.push({
+                x: centerX + size * Math.cos(angle),
+                y: centerY + size * Math.sin(angle)
+              });
+            }
+            points.push(points[0]);
+          }
+        } else {
+          const complexity = Math.min(10, Math.floor((i - 50) / 5) + 1);
+          points.push({ x: centerX - baseSize, y: centerY - baseSize });
+          for (let j = 0; j < complexity; j++) {
+            const last = points[points.length - 1];
+            const direction = Math.random() * 2 * Math.PI;
+            const length = baseSize / complexity;
+            points.push({
+              x: last.x + length * Math.cos(direction),
+              y: last.y + length * Math.sin(direction)
+            });
+          }
+          points.push({ x: centerX + baseSize, y: centerY + baseSize });
+        }
+        levelsArray.push(points);
+      }
+      return levelsArray;
+    }
+
+    // Check whether the drawn (pixel) path covers the target pattern segments.
+    function isPointNearSegment(point, segStart, segEnd, tolerance) {
+      const A = point;
+      const B = segStart;
+      const C = segEnd;
+      const BA = { x: A.x - B.x, y: A.y - B.y };
+      const BC = { x: C.x - B.x, y: C.y - B.y };
+      const dot = BA.x * BC.x + BA.y * BC.y;
+      const len_sq = BC.x * BC.x + BC.y * BC.y;
+      const param = dot / len_sq;
+      let closest;
+      if (param < 0) {
+        closest = B;
+      } else if (param > 1) {
+        closest = C;
+      } else {
+        closest = { x: B.x + param * BC.x, y: B.y + param * BC.y };
+      }
+      const dx = A.x - closest.x;
+      const dy = A.y - closest.y;
+      return dx * dx + dy * dy < tolerance * tolerance;
+    }
+
+    function checkCompletion() {
+      const tolerance = 50;
+      const targetPoints = levels[currentLevel];
+      const segments = [];
+      for (let i = 0; i < targetPoints.length - 1; i++) {
+        segments.push({ start: targetPoints[i], end: targetPoints[i + 1] });
+      }
+      const coveredSegments = new Set();
+      for (let point of drawing) {
+        for (let i = 0; i < segments.length; i++) {
+          const segment = segments[i];
+          if (isPointNearSegment(point, segment.start, segment.end, tolerance)) {
+            coveredSegments.add(i);
+          }
+        }
+      }
+      console.log(`Covered ${coveredSegments.size} of ${segments.length} segments`);
+      if (coveredSegments.size === segments.length) {
+        score++;
+        currentLevel++;
+        if (currentLevel >= 100) {
+          alert('Congratulations! You completed all 100 levels!');
+          restartGame();
+        } else {
+          startLevel();
+        }
+      }
+    }
+
+    function startLevel() {
+      drawing = [];
+      patternVisible = true;
+      updateHUD();
+      if (patternTimer) clearTimeout(patternTimer);
+      patternTimer = setTimeout(() => {
+        patternVisible = false;
+      }, 1000);
+    }
+
+    function restartLevel() {
+      startLevel();
+    }
+
+    function restartGame() {
+      currentLevel = 0;
+      score = 0;
+      startLevel();
+    }
+
+    restartLevelButton.addEventListener('click', restartLevel);
+    restartGameButton.addEventListener('click', restartGame);
+
+    function updateHUD() {
+      levelDisplay.textContent = `Level: ${currentLevel + 1}`;
+      scoreDisplay.textContent = `Score: ${score}`;
+    }
+
+    function render() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const targetPoints = levels[currentLevel];
+      ctx.strokeStyle = patternVisible
+        ? 'rgba(255, 255, 255, 1)'
+        : 'rgba(255, 255, 255, 0.3)';
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      targetPoints.forEach((point, index) => {
+        if (index === 0) ctx.moveTo(point.x, point.y);
+        else ctx.lineTo(point.x, point.y);
+      });
+      ctx.stroke();
+      requestAnimationFrame(render);
+    }
+    render();
+
+    window.addEventListener('resize', () => {
+      // Update renderer and canvas dimensions based on the container size.
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      levels = generateLevels();
+      startLevel();
+    });
+
+    startLevel();
+  </script>
+</body>
+</html>
